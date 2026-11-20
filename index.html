@@ -133,6 +133,7 @@
       <div class="spinner"></div>
       <h2>Preparing your personal license code…</h2>
       <p>One moment — we are reserving a code just for you.</p>
+      <p>The first check can take up to 30 seconds — please keep this page open and do not press Back.</p>
     </div>
 
     <!-- Shown when the code is ready -->
@@ -183,14 +184,33 @@
     });
   }
 
-  function claim() {
-    show("state-loading");
-    fetch(API_URL, {
+  /* Warm up the license server as soon as the page opens, so the
+     buyer's real claim does not pay the cold-start wait. */
+  try { fetch(API_URL, { method: "GET" }).then(function (r) { return r.text(); }).catch(function () { }); } catch (e) { }
+
+  function claimAttempt() {
+    var ctrl = ("AbortController" in window) ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 45000) : null;
+    return fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "claim", sale_id: saleId, name: buyerName, email: buyerEmail })
-    })
-      .then(function (res) { return res.json(); })
+      body: JSON.stringify({ action: "claim", sale_id: saleId, name: buyerName, email: buyerEmail }),
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (res) {
+      if (timer) { clearTimeout(timer); }
+      return res.json();
+    }, function (err) {
+      if (timer) { clearTimeout(timer); }
+      throw err;
+    });
+  }
+
+  function claim() {
+    show("state-loading");
+    /* One automatic retry on a network failure: claiming is
+       idempotent for the same sale ID (the same code comes
+       back), so a retry can never hand out a second code. */
+    claimAttempt().catch(function () { return claimAttempt(); })
       .then(function (data) {
         if (data && data.ok && data.code) {
           document.getElementById("license-code").textContent = data.code;
